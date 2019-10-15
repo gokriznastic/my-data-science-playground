@@ -7,22 +7,17 @@ import matplotlib.pyplot as plt
 import os
 
 class Trainer():
-    def __init__(self, model, train_loader, val_loader, test_loader=None):
+    def __init__(self, model, train_loader, val_loader):
         """ Initialze the model and dataloaders for the trainer
 
         Arguments:
             model : the model to be trained
             train_loader : DataLoader containing training data
             val_loader : DataLoader containing validation data
-
-        Keyword Arguments:
-            test_loader : DataLoader containing testing data (default: None)
         """
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
-        if test_loader is not None:
-            self.test_loader = test_loader
 
         self.losses = {'train':[], 'validation':[]}
 
@@ -47,7 +42,7 @@ class Trainer():
             scheduler : whether to use scheduler if loss plateaus (default: False)
         """
         self.learning_rate = lr
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=1e-5)
         self.loss_fn = loss_fn
 
         if (scheduler):
@@ -78,18 +73,23 @@ class Trainer():
         start_epoch = checkpoint['epoch'] + 1
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
         try:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         except:
             pass
-        self.losses = checkpoint['loss']
 
-        print(self.log("--> Loaded checkpoint from'{}'\nResuming training from epoch {}\n\n"
+        self.losses = checkpoint['loss']
+        val_min = min(self.losses['validation'])
+
+        print(self.log("--> Loaded checkpoint from '{}'\nResuming training from epoch {}\n\n"
                     .format(model_path, start_epoch)))
 
-        return start_epoch, self.model, self.optimizer, self.scheduler, self.losses
+        return start_epoch, self.model, self.optimizer, self.scheduler, self.losses, val_min
+        # return start_epoch, self.model, self.optimizer, self.losses, val_min
 
-    def epoch_train(self):
+
+    def epoch_train(self, print_every=50):
         model = self.model
         loss_fn = self.loss_fn
         optimizer = self.optimizer
@@ -99,8 +99,7 @@ class Trainer():
         model.train()
         for batch_idx, (data, target) in enumerate(self.train_loader):
 
-            # data, target = data.float().to(device), target.float().to(device)
-            data, target = data.float().to(device), target.long().to(device)
+            data, target = data.float().to(device), target.float().to(device)
 
             optimizer.zero_grad()
 
@@ -110,6 +109,9 @@ class Trainer():
             train_loss += ((1 / (batch_idx + 1)) * (loss.item()/data.size(0) - train_loss))
             loss.backward()
             optimizer.step()
+
+            if (batch_idx % print_every == 0):
+                print('Epoch {}\tBatch [{}/{}]\t\tTraining Loss: {}'.format(self.epoch+1, batch_idx+1, len(self.train_loader), train_loss))
 
         return train_loss
 
@@ -122,8 +124,7 @@ class Trainer():
         model.eval()
         with torch.no_grad():
             for batch_idx, (data, target) in enumerate(self.val_loader):
-                # data, target = data.float().to(device), target.float().to(device)
-                data, target = data.float().to(device), target.long().to(device)
+                data, target = data.float().to(device), target.float().to(device)
 
                 val_pred = model(data)
                 val_loss = loss_fn(val_pred, target)
@@ -154,6 +155,8 @@ class Trainer():
         except:
             pass
         losses = self.losses
+        valid_loss_min = np.Inf
+        start_epoch = 0
 
         if (log_path is None and model_path is None):
             self.log_path = str(start.strftime('%d-%m-%Y-%H:%M:%S')+'_train_log')
@@ -161,24 +164,27 @@ class Trainer():
             self.log('Learning rate: {}, Batch size: {}\n\n'.format(self.learning_rate, batch_size))
 
         elif (os.path.exists(model_path) and os.path.exists(log_path)):
-            start_epoch, model, optimizer, scheduler, losses = self.load_checkpoint(model, log_path, model_path)
+            # start_epoch, model, optimizer, scheduler, losses = self.load_checkpoint(log_path, model_path)
+            start_epoch, model, optimizer, scheduler, losses, valid_loss_min = self.load_checkpoint(log_path, model_path)
             valid_loss_min = min(losses['validation'])
 
         else:
             print('[!] Specified model path or log path does not exist.')
+            return
 
         # loss_fn = self.loss_fn
-        valid_loss_min = np.Inf
-        start_epoch = 0
 
         checkpoint = {}
 
-        for epoch in range(start_epoch, start_epoch+n_epochs):
+        for self.epoch in range(start_epoch, start_epoch+n_epochs):
 
-            train_loss = self.epoch_train()
+            # self.epoch = epoch
+
+            train_loss = self.epoch_train(print_every=500)
             valid_loss = self.epoch_val()
 
-            print(self.log('Epoch: {} \tTraining Loss: {:.5f} \tValidation Loss: {:.5f}\n'.format(epoch, train_loss, valid_loss)))
+            print(self.log('\nEpoch: [{}/{}] \tTraining Loss: {:.5f} \tValidation Loss: {:.5f}\n'.format(
+                                                    self.epoch+1, start_epoch+n_epochs, train_loss, valid_loss)))
             print('-'*100)
 
             #####----CHECKPOINTING----#####
@@ -203,7 +209,7 @@ class Trainer():
             losses['train'].append(train_loss)
             losses['validation'].append(valid_loss)
 
-            checkpoint['epoch'] = epoch
+            checkpoint['epoch'] = self.epoch
             checkpoint['loss'] = losses
             torch.save(checkpoint, self.model_path)
 
