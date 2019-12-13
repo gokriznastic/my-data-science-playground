@@ -1,6 +1,6 @@
 import torch
 from torch import optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
 from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
@@ -46,7 +46,8 @@ class Trainer():
         self.loss_fn = loss_fn
 
         if (scheduler):
-            self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=4, verbose=True)
+            self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.1, patience=2, verbose=True, min_lr=1e-6)
+            # self.scheduler = StepLR(self.optimizer, step_size=5, gamma=0.1)
 
     def load_checkpoint(self, log_path, model_path):
         """ Function to load checkpoints from a previously saved model
@@ -85,7 +86,7 @@ class Trainer():
         print(self.log("--> Loaded checkpoint from '{}'\nResuming training from epoch {}\n\n"
                     .format(model_path, start_epoch)))
 
-        return start_epoch, self.model, self.optimizer, self.scheduler, self.losses, val_min
+        return checkpoint, start_epoch, self.model, self.optimizer, self.scheduler, self.losses, val_min
         # return start_epoch, self.model, self.optimizer, self.losses, val_min
 
 
@@ -104,14 +105,15 @@ class Trainer():
             optimizer.zero_grad()
 
             pred = model(data)
-            loss = loss_fn(pred, target)
 
+            loss = loss_fn(pred, target)
             train_loss += ((1 / (batch_idx + 1)) * (loss.item()/data.size(0) - train_loss))
+
             loss.backward()
             optimizer.step()
 
             if (batch_idx % print_every == 0):
-                print('Epoch {}\tBatch [{}/{}]\t\tTraining Loss: {}'.format(self.epoch+1, batch_idx+1, len(self.train_loader), train_loss))
+                print('Epoch {}\tBatch [{}/{}]\t\tTraining Loss: {:.5f}'.format(self.epoch+1, batch_idx+1, len(self.train_loader), train_loss))
 
         return train_loss
 
@@ -157,6 +159,7 @@ class Trainer():
         losses = self.losses
         valid_loss_min = np.Inf
         start_epoch = 0
+        checkpoint = {}
 
         if (log_path is None and model_path is None):
             self.log_path = str(start.strftime('%d-%m-%Y-%H:%M:%S')+'_train_log')
@@ -165,7 +168,7 @@ class Trainer():
 
         elif (os.path.exists(model_path) and os.path.exists(log_path)):
             # start_epoch, model, optimizer, scheduler, losses = self.load_checkpoint(log_path, model_path)
-            start_epoch, model, optimizer, scheduler, losses, valid_loss_min = self.load_checkpoint(log_path, model_path)
+            checkpoint, start_epoch, model, optimizer, scheduler, losses, valid_loss_min = self.load_checkpoint(log_path, model_path)
             valid_loss_min = min(losses['validation'])
 
         else:
@@ -173,8 +176,6 @@ class Trainer():
             return
 
         # loss_fn = self.loss_fn
-
-        checkpoint = {}
 
         for self.epoch in range(start_epoch, start_epoch+n_epochs):
 
@@ -251,10 +252,13 @@ class Trainer():
         """
         if losses is None:
             losses = self.losses
-        # plt.ylim([0,2])
+        # plt.xlim([0,2])
         plt.plot(losses['train'], label='Training loss')
         plt.plot(losses['validation'], label='Validation loss')
         plt.legend()
         plt.savefig(fpath)
         # plt.show()
         plt.close()
+
+    def log_tensorboard(self):
+        pass
