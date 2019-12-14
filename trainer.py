@@ -1,10 +1,17 @@
+import os
+from datetime import datetime
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
+from PIL import Image
 from torch import optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
-from datetime import datetime
-import numpy as np
-import matplotlib.pyplot as plt
-import os
+from torch.utils.tensorboard import SummaryWriter
+from torchvision.transforms import ToTensor
+
+from viz import plot_curves
+
 
 class Trainer():
     def __init__(self, model, train_loader, val_loader):
@@ -87,7 +94,6 @@ class Trainer():
                     .format(model_path, start_epoch)))
 
         return checkpoint, start_epoch, self.model, self.optimizer, self.scheduler, self.losses, val_min
-        # return start_epoch, self.model, self.optimizer, self.losses, val_min
 
 
     def epoch_train(self, print_every=50):
@@ -122,6 +128,9 @@ class Trainer():
         loss_fn = self.loss_fn
         device = self.device
 
+        self.y_true = torch.FloatTensor().to(device)
+        self.y_pred = torch.FloatTensor().to(device)
+
         valid_loss = 0.0
         model.eval()
         with torch.no_grad():
@@ -132,6 +141,9 @@ class Trainer():
                 val_loss = loss_fn(val_pred, target)
 
                 valid_loss += ((1 / (batch_idx + 1)) * (val_loss.item()/data.size(0) - valid_loss))
+
+                self.y_true = torch.cat((self.y_true, target), 0)
+                self.y_pred = torch.cat((self.y_pred, val_pred), 0)
 
         return valid_loss
 
@@ -149,6 +161,7 @@ class Trainer():
             losses : the dictionary containing the loss values
         """
         start = datetime.now()
+        timestamp = start.strftime('%d-%m-%Y-%H:%M:%S')
 
         model = self.model
         optimizer = self.optimizer
@@ -162,12 +175,12 @@ class Trainer():
         checkpoint = {}
 
         if (log_path is None and model_path is None):
-            self.log_path = str(start.strftime('%d-%m-%Y-%H:%M:%S')+'_train_log')
-            self.model_path = '{}_model.pt'.format(start.strftime('%d-%m-%Y-%H:%M:%S'))
+            self.model_path = '{}_model.pt'.format(timestamp)
+            self.log_path = '{}_train_log'.format(timestamp)
             self.log('Learning rate: {}, Batch size: {}\n\n'.format(self.learning_rate, batch_size))
+            self.writer = SummaryWriter('logs/{}'.format(timestamp))
 
         elif (os.path.exists(model_path) and os.path.exists(log_path)):
-            # start_epoch, model, optimizer, scheduler, losses = self.load_checkpoint(log_path, model_path)
             checkpoint, start_epoch, model, optimizer, scheduler, losses, valid_loss_min = self.load_checkpoint(log_path, model_path)
             valid_loss_min = min(losses['validation'])
 
@@ -175,23 +188,27 @@ class Trainer():
             print('[!] Specified model path or log path does not exist.')
             return
 
-        # loss_fn = self.loss_fn
-
         for self.epoch in range(start_epoch, start_epoch+n_epochs):
 
-            # self.epoch = epoch
+            epoch_start = datetime.now()
 
             train_loss = self.epoch_train(print_every=500)
             valid_loss = self.epoch_val()
 
-            print(self.log('\nEpoch: [{}/{}] \tTraining Loss: {:.5f} \tValidation Loss: {:.5f}\n'.format(
-                                                    self.epoch+1, start_epoch+n_epochs, train_loss, valid_loss)))
-            print('-'*100)
+            epoch_end = datetime.now()
+            epoch_time = str(epoch_end - epoch_start).split('.')[0]
+
+            self.writer.add_scalars('Losses', {'train loss':train_loss,
+                                    'validation loss':valid_loss}, self.epoch)
+
+            print(self.log('\nEpoch: [{}/{}] \tTraining Loss: {:.5f} \tValidation Loss: {:.5f} \t Time per epoch: {}\n'.format(
+                                                    self.epoch+1, start_epoch+n_epochs, train_loss, valid_loss, epoch_time)))
+            print('-'*120)
 
             #####----CHECKPOINTING----#####
             if (valid_loss < valid_loss_min):
                 print(self.log("Saving model.  Validation loss:... {:.5f} --> {:.5f}\n".format(valid_loss_min, valid_loss)))
-                print('*'*100)
+                print('*'*120)
                 valid_loss_min = valid_loss
 
                 checkpoint['model_state_dict'] = model.state_dict()
@@ -214,7 +231,14 @@ class Trainer():
             checkpoint['loss'] = losses
             torch.save(checkpoint, self.model_path)
 
-            self.draw_loss_curve('{}_losses.png'.format(self.model_path.split('_')[0]))
+            self.draw_loss_curve('{}_losses.png'.format(timestamp))
+            metrics_buf = self.plot_metrics('{}_metrics.png'.format(timestamp))
+
+            metrics_image = Image.open(metrics_buf)
+            metrics_image = ToTensor()(metrics_image)
+            self.writer.add_image('Validation metrics', metrics_image, self.epoch)
+
+            self.writer.flush()
 
         end = datetime.now()
         time = str(end - start).split('.')[0]
@@ -252,13 +276,25 @@ class Trainer():
         """
         if losses is None:
             losses = self.losses
-        # plt.xlim([0,2])
+
         plt.plot(losses['train'], label='Training loss')
         plt.plot(losses['validation'], label='Validation loss')
         plt.legend()
         plt.savefig(fpath)
-        # plt.show()
         plt.close()
 
-    def log_tensorboard(self):
+    def log_tensorboard(self, fpath):
         pass
+
+    def plot_metrics(self, fpath):
+        """ Function to plot accuracy metrics (if any)
+
+        Arguments:
+            fpath : the filepath to save the accuracy metric plot in
+        """
+        # pass
+        num_classes = 4
+        class_names = ['Lung Opacity', 'Pneumothorax', 'Pleural Effusion', 'Fracture']
+        buf = plot_curves(self.y_pred, self.y_true, num_classes, class_names, fpath)
+
+        return buf
